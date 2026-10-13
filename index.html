@@ -83,6 +83,7 @@ footer{text-align:center;color:var(--mut);padding:28px;font-size:12px}
     <div class="stage">
       <div class="bar">
         <button class="btn" id="aiBtn">✨ Quitar fondo con IA</button>
+        <button class="btn s" id="autoBtn" title="Sin IA: quita el color del fondo desde los bordes (usa la tolerancia de la varita)">🎨 Auto por color</button>
         <button class="btn s" id="undo" title="Ctrl+Z">↶</button><button class="btn s" id="redo" title="Ctrl+Shift+Z">↷</button>
         <button class="btn s" id="reset">Restablecer</button>
         <button class="btn s" id="cmp" title="Mantené presionado">👁 Original</button>
@@ -204,7 +205,7 @@ const cmp=$('#cmp');['mousedown','touchstart'].forEach(e=>cmp.addEventListener(e
 const hints={pan:'Arrastrá para mover la imagen.',erase:'Pintá para borrar. [ y ] cambian el tamaño.',restore:'Pintá para recuperar partes del original.',wand:'Clic en un color para seleccionarlo. Shift suma · Alt resta. Podés mover la tolerancia después.',lasso:''};
 function setTool(t){tool=t;$$('.tool').forEach(b=>b.classList.toggle('on',b.dataset.t===t));$$('.og').forEach(o=>o.classList.toggle('on',o.dataset.for.split(' ').includes(t)));
   wrap.style.cursor=t==='pan'?'grab':'crosshair';resetLasso();if(t==='lasso'){lassoHint();ensureGrad(true)}else msg(hints[t]);drawOv()}
-$$('.tool').forEach(b=>b.onclick=()=>setTool(b.dataset.t));setTool('pan');
+$$('.tool').forEach(b=>b.onclick=()=>setTool(b.dataset.t));
 function lassoHint(){const m=seg('lm'),h={poly:'Clic para cada punto · clic en el primero o doble clic para cerrar · Retroceso borra el último.',free:'Mantené presionado y dibujá alrededor; al soltar se cierra.',mag:'Clic para anclar; la línea se pega a los bordes. Clic en el inicio para cerrar.'}[m];$('#lh').textContent=h;msg(h)}
 const pos=e=>{const r=view.getBoundingClientRect();return{x:Math.max(0,Math.min(view.width-1,(e.clientX-r.left)/r.width*view.width)),y:Math.max(0,Math.min(view.height-1,(e.clientY-r.top)/r.height*view.height))}};
 
@@ -253,7 +254,7 @@ function wandClick(p,e){lastW={it:cur,x:p.x|0,y:p.y|0,mode:modeFrom(e),base:cur.
 function applyW(){if(!lastW||lastW.it!==cur)return;cur.sel=lastW.base?clone(lastW.base):null;const s=wandRun(lastW.x,lastW.y);if(s)combine(s,lastW.mode);else selChanged()}
 
 /* lazo */
-const resetLasso=()=>{L={pts:[],anch:[],live:[],free:false};if(cur)drawOv()};
+function resetLasso(){L={pts:[],anch:[],live:[],free:false};if(cur)drawOv()}
 const nearStart=p=>L.pts.length>2&&Math.hypot(p.x-L.pts[0].x,p.y-L.pts[0].y)*zoom<10;
 function ensureGrad(quiet){if(!cur||cur.grad)return;const w=cur.src.width,h=cur.src.height,d=cur.src.getContext('2d').getImageData(0,0,w,h).data,gr=new Uint8Array(w*h),g=new Uint8Array(w*h);
   for(let i=0;i<gr.length;i++)gr[i]=(d[i*4]*77+d[i*4+1]*150+d[i*4+2]*29)>>8;
@@ -331,14 +332,30 @@ $('#rApply').onclick=()=>{if(!cur)return;push();const c=cur.cv,w=c.width,h=c.hei
 
 /* ---------- IA ---------- */
 function prog(v){const p=$('#prog');p.style.display=v==null?'none':'block';p.firstElementChild.style.width=(v||0)*100+'%'}
+async function getLib(){if(lib)return lib;msg('Descargando modelo de IA (solo la primera vez)…');let err;
+  for(const u of ['https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.5.5/+esm','https://esm.sh/@imgly/background-removal@1.5.5']){
+    try{const m=await import(u);lib=m.removeBackground||m.default;if(lib)return lib}catch(e){err=e;console.warn('IA: falló',u,e)}}
+  throw err||new Error('no se pudo cargar la librería')}
 async function runAI(it){
-  if(!lib){msg('Descargando modelo de IA (solo la primera vez)…');lib=(await import('https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.5.5/+esm')).removeBackground}
-  const blob=await new Promise(r=>it.src.toBlob(r,'image/png')),out=await lib(blob,{model:$('#model').value,progress:(k,c,t)=>prog(c/t)});
+  const rb=await getLib(),blob=await new Promise(r=>it.src.toBlob(r,'image/png')),out=await rb(blob,{model:$('#model').value,progress:(k,c,t)=>prog(t?c/t:0)});
   push(it);const bm=await createImageBitmap(out),x=it.cv.getContext('2d');x.clearRect(0,0,it.cv.width,it.cv.height);x.drawImage(bm,0,0,it.cv.width,it.cv.height);it.done=true}
-async function guard(fn){['aiBtn','aiAll'].forEach(i=>$('#'+i).disabled=true);try{await fn()}catch(e){console.error(e);msg('❌ No se pudo procesar. Revisá tu conexión (el modelo se descarga de internet).')}
+async function guard(fn){['aiBtn','aiAll'].forEach(i=>$('#'+i).disabled=true);try{await fn()}catch(e){console.error(e);msg('❌ Falló la IA ('+(e&&e.message||e)+'). Revisá tu conexión o usá «Auto por color».')}
   prog();['aiBtn','aiAll'].forEach(i=>$('#'+i).disabled=false);if(cur){render();list()}}
 $('#aiBtn').onclick=()=>cur&&guard(async()=>{msg('Quitando fondo…');await runAI(cur);msg('✅ Listo. Retocá con varita, lazo o pincel si hace falta.')});
 $('#aiAll').onclick=()=>guard(async()=>{let n=0;for(const it of items){msg(`Procesando ${++n}/${items.length}…`);await runAI(it);if(it===cur)render();list()}msg('✅ Todas procesadas.')});
+
+/* ---------- auto por color (sin IA) ---------- */
+function autoBG(it){push(it);const c=it.cv,w=c.width,h=c.height,x=c.getContext('2d'),O=x.getImageData(0,0,w,h),D=O.data;let r=0,g=0,b=0,n=0;
+  const B=[];for(let i=0;i<w;i++){B.push(i,(h-1)*w+i)}for(let j=0;j<h;j++){B.push(j*w,j*w+w-1)}
+  for(const p of B){const i=p*4;if(D[i+3]>10){r+=D[i];g+=D[i+1];b+=D[i+2];n++}}if(!n)return;r/=n;g/=n;b/=n;
+  const thr=Math.pow(Math.max(25,+$('#tol').value)*2.55,2)*9,ok=p=>{const i=p*4;return D[i+3]>=10&&2*(D[i]-r)**2+4*(D[i+1]-g)**2+3*(D[i+2]-b)**2<=thr},m=new Uint8Array(w*h),st=[];
+  for(const p of B)if(!m[p]&&ok(p)){m[p]=1;st.push(p)}
+  while(st.length){const p=st.pop(),px=p%w,py=(p-px)/w;
+    if(px>0&&!m[p-1]&&ok(p-1)){m[p-1]=1;st.push(p-1)}if(px<w-1&&!m[p+1]&&ok(p+1)){m[p+1]=1;st.push(p+1)}
+    if(py>0&&!m[p-w]&&ok(p-w)){m[p-w]=1;st.push(p-w)}if(py<h-1&&!m[p+w]&&ok(p+w)){m[p+w]=1;st.push(p+w)}}
+  for(let p=0;p<m.length;p++){if(m[p])D[p*4+3]=0;else{const px=p%w,py=(p-px)/w;if((px>0&&m[p-1])||(px<w-1&&m[p+1])||(py>0&&m[p-w])||(py<h-1&&m[p+w]))D[p*4+3]=Math.min(D[p*4+3],150)}}
+  x.putImageData(O,0,0);it.done=true}
+$('#autoBtn').onclick=()=>{if(!cur)return;autoBG(cur);render();list();msg('Fondo quitado por color de bordes. Si quedó de más o de menos, deshacé y ajustá la tolerancia en la varita.')};
 
 /* ---------- fondo ---------- */
 [['transparent'],['#ffffff'],['#000000'],['#ef4444'],['#22c55e'],['#3b82f6'],['g','linear-gradient(135deg,#18d6ee,#d726e8)'],['g','linear-gradient(135deg,#f97316,#ec4899)']].forEach((p,i)=>{const b=document.createElement('button');
@@ -364,5 +381,6 @@ function save(it){const f=$('#fmt').value,mime={png:'image/png',webp:'image/webp
   compose(it).toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`${it.name}-nexora.${f}`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),5e3)},mime,.95)}
 $('#dl').onclick=()=>cur&&save(cur);
 $('#dlAll').onclick=async()=>{for(const it of items){save(it);await new Promise(r=>setTimeout(r,350))}};
+setTool('pan');
 </script>
 </body></html>
